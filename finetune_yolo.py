@@ -6,7 +6,8 @@ app = modal.App("vip-htd-finetune")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("ultralytics", "opencv-python-headless", "numpy")
+    .apt_install("libgl1", "libglib2.0-0")
+    .pip_install("ultralytics", "numpy")
     .add_local_python_source("utils")
 )
 
@@ -16,7 +17,8 @@ SPLITS = ["train", "validation", "test"]
 
 
 def _do_train(data_root: Path, runs_root: Path, *,
-              epochs: int, imgsz: int, batch: int, fraction: float | None):
+              epochs: int, imgsz: int, batch: int, fraction: float | None,
+              on_epoch_end=None):
     from ultralytics import YOLO
     from utils.eval_utils import prepare_split_paths
 
@@ -37,29 +39,35 @@ def _do_train(data_root: Path, runs_root: Path, *,
         patience=10,
         project=str(runs_root),
         name="yolo11m_vip",
-        cache=True,
-        workers=8,
+        workers=16,
+        cache="ram",
     )
     if fraction is not None:
         train_kwargs["fraction"] = fraction
 
     model = YOLO("yolo11m.pt")
+    if on_epoch_end is not None:
+        model.add_callback("on_fit_epoch_end", on_epoch_end)
     model.train(**train_kwargs)
-    model.val(data=str(yaml_path), split="test")
+    model.val(data=str(yaml_path), split="test", batch=32, workers=16)
 
 
 @app.function(
     image=image,
-    gpu="A100",
+    gpu="H100",
     volumes={"/vol": vol},
-    timeout=60 * 60 * 4,
+    timeout=60 * 60 * 8,
 )
 def train_remote(epochs: int = 50, imgsz: int = 1280,
-                 batch: int = 16, fraction: float | None = None):
+                 batch: int = 24, fraction: float | None = None):
+    def commit_epoch(trainer):
+        vol.commit()  # persist best.pt/last.pt after each fit epoch
+
     _do_train(
         data_root=Path("/vol/VIP-HTD/mot-challenge-format"),
         runs_root=Path("/vol/runs/finetune"),
         epochs=epochs, imgsz=imgsz, batch=batch, fraction=fraction,
+        on_epoch_end=commit_epoch,
     )
     vol.commit()
 
@@ -75,7 +83,7 @@ def train_local(epochs: int = 1, imgsz: int = 640,
 
 @app.local_entrypoint()
 def main():
-    train_remote.remote()
+    train_remote.spawn()
 
 
 if __name__ == "__main__":

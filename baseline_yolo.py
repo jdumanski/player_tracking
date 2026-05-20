@@ -10,13 +10,13 @@ from ultralytics import YOLO
 from utils.eval_utils import find_sequences, load_gt, prepare_split_paths
 
 # mot gt is frame_id, track_id, x, y, w, h, confidence, class, visibility
-def viz_results(seq_path, detector):
+def viz_results(seq_path, detector, num_frames, out_folder, stride=1):
     yolo_person_cls_id = 0
     sequences = find_sequences(seq_path)
-    results_root = Path("results")
+    results_root = Path(out_folder)
     GT_COLOR = (0, 255, 0)    # green
     PRED_COLOR = (0, 0, 255)  # red
-
+    
     for i, seq in enumerate(sequences, start=1):
         img_dir = seq / "img1"
         gt = load_gt(seq / "gt/gt.txt")
@@ -24,8 +24,10 @@ def viz_results(seq_path, detector):
         out_dir = results_root / seq.name
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"On sequence {i}: {seq.name}")
-
-        for frame_path in frames[:2]:  # first frame per sequence
+        curr_num_frames = min(num_frames*stride, len(frames))
+        for frame_idx, frame_path in enumerate(frames[:curr_num_frames]):
+            if frame_idx % stride != 0:
+                continue
             img = cv2.imread(str(frame_path))
 
             # predictions (xyxy, person class only)
@@ -57,10 +59,11 @@ def viz_results(seq_path, detector):
 
             out_path = out_dir / frame_path.name
             cv2.imwrite(str(out_path), img)
-            print(f"  saved {out_path}")
+            #print(f"  saved {out_path}")
 
 # run one model.val() over all sequences (micro-averaged metrics).
-def eval_baseline_metrics(seq_path, model):
+# one class true means model only have one class
+def eval_detection_metrics(seq_path, model, one_class=False):
     seq_path = Path(seq_path)
     list_path = prepare_split_paths(seq_path) # path to .txt listing abs path of all images and labels
 
@@ -68,8 +71,10 @@ def eval_baseline_metrics(seq_path, model):
     yaml_path.write_text(
         f"train: {list_path}\nval: {list_path}\nnames:\n  0: person\n"
     )
-
-    res = model.val(data=str(yaml_path), classes=[0], verbose=False)
+    if one_class:
+        res = model.val(data=str(yaml_path), classes=[0], verbose=False)
+    else:
+        res = model.val(data=str(yaml_path), verbose=False)
     print(
         f"mAP50={res.box.map50:.4f} mAP50-95={res.box.map:.4f} "
         f"P={res.box.mp:.4f} R={res.box.mr:.4f}"
@@ -77,9 +82,11 @@ def eval_baseline_metrics(seq_path, model):
 
 def main():
     seq_path = "VIP-HTD/mot-challenge-format/test"
-    model = YOLO("./yolo11m.pt")
-    #viz_results(seq_path, model)
-    eval_baseline_metrics(seq_path, model)
+    ft_path = "./yolo_trained/yolo11m_vip/weights/best.pt"
+    base_path = "./yolo11m.pt"
+    model = YOLO(ft_path)
+    viz_results(seq_path, model, 100, "detection_results/visualized/base", stride=100)
+    #eval_detection_metrics(seq_path, model, one_class=True)
     
 if __name__ == "__main__":
     main()
